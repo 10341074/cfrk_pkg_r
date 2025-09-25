@@ -1,5 +1,46 @@
 library(magrittr)
 library(compositions)
+library(FRK)
+library(sf)
+library(ggplot2)
+
+
+GetBBox <- function(crs, xmin=0, xmax=1, ymin=0, ymax=1) {
+  st_as_sfc(st_bbox(
+    c(xmin = xmin, xmax = xmax,
+      ymin = ymin, ymax = ymax), crs = crs
+    )
+  )
+}
+
+
+GetBBox_FromGeometry <- function(sf_geometry) {
+  library(sf)
+  limits = unlist(st_bbox(sf_geometry))
+  sfbbox = GetBBox(st_crs(sf_geometry),
+      xmin=limits[[1]], xmax=limits[[3]],
+      ymin=limits[[2]], ymax=limits[[4]])
+  sfbbox
+}
+
+
+
+GetSpatialGrid_FromBBox <- function(this_bbox, xnum=100, ynum=100) {
+  xmin = min(st_coordinates(this_bbox)[,1])
+  xmax = max(st_coordinates(this_bbox)[,1])
+  ymin = min(st_coordinates(this_bbox)[,2])
+  ymax = max(st_coordinates(this_bbox)[,2])
+
+
+  xstep = (xmax - xmin) / xnum
+  ystep = (ymax - ymin) / ynum
+
+  x = GridTopology(c(xmin+0.5*xstep,ymin+0.5*ystep), c(xstep,ystep), c(xnum-1,ynum-1))
+  xlarge = GridTopology(c(xmin-xstep,ymin-ystep), c(xstep,ystep), c(xnum+2,ynum+2))
+  y = SpatialGrid(grid = xlarge, proj4string = CRS(paste("EPSG:", st_crs(this_bbox)$epsg)))
+  coordnames(y) <- c('x', 'y')
+  y
+}
 
 ## algebric methods
 
@@ -137,15 +178,34 @@ GetGridBAUs <- function(dataframe, cellsize) {
   GridBAUs1
 }
 
+Subset_Intersecating_Grid <- function(GridBAUs1, polygons_sf_cover){
+  # Supponendo che spdf sia un SpatialPixelsDataFrame
+  pixels_sf <- st_as_sf(as(GridBAUs1, "SpatialPointsDataFrame"))
+  polygons_sf <- st_make_valid(polygons_sf_cover)  # se necessario
+  # Calcola intersezioni
+  hits <- st_intersects(pixels_sf, polygons_sf, sparse = TRUE)
+  # hits è una lista di vettori: per ogni pixel, gli indici dei poligoni che interseca
+  intersecting_pixels <- lengths(hits) > 0
+  GridBAUs1[intersecting_pixels,]
+}
+
 GetFRKFolderOutput <- function(
   figures_folder, DestName.Pollutant,
   Global_Use_Cov_Population, Global_Use_Cov_Elevation,
-  frk.args, flag_use_pca, flag_obs_fs, baus.cellsize, DestName.IndexDrop) {
-    folder_output = paste0(figures_folder, "/FRK_Pollutant_", DestName.Pollutant,
+  frk.args, flag_use_pca, flag_obs_fs, baus.cellsize, DestName.IndexDrop, foldername = "") {
+  conf = paste0(figures_folder, "/FRK_Pollutant_", DestName.Pollutant,
     "_Global_Use_Cov_Population_", Global_Use_Cov_Population,  "_Global_Use_Cov_Elevation_", Global_Use_Cov_Elevation,
     "_prediction_levels", as.character(frk.args["basis_nres"]) , "_", frk.args["basis_type"],
     "_PCA_", as.character(flag_use_pca), "_obsFs_", as.character(flag_obs_fs), "_BausCellsize_", baus.cellsize,
     "_IndexDrop_", as.character(DestName.IndexDrop))
+  if (nchar(foldername) == 0) {
+    foldname <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    foldname <- "output"
+  }
+  folder_output = paste(figures_folder, foldname, sep='/')
+  if(!dir.exists(folder_output)){dir.create(folder_output)}
+  # scrivere su file "output.txt"
+  cat(conf, file = paste(folder_output, 'configuration.txt', sep = '/'))
   folder_output
 }
 
@@ -166,6 +226,32 @@ GetBasis <- function(dataframe, frk.args) {
                   type = type, # type of basis function
                   regular = 0) # place regularly in domain
   G
+}
+
+
+Interp_OnBaus_Raster <- function(GridBAUs, raster) {
+  library(raster)
+  grid_r <- st_transform(st_as_sf(as.data.frame(coordinates(GridBAUs)),
+                                  coords = c('x', 'y'), crs = st_crs(GridBAUs)),
+                         crs = st_crs(raster))
+  # conversione covariata per metodo
+  cov = raster::extract(raster, grid_r)
+  cov
+}
+
+Interp_OnBaus_DensityPopOnNodes <- function(data_air, GridBAUs1, data_popolazione_smoothed_nodes) {
+  cov.P1 <- InterpThisVector(st_coordinates(data_popolazione_smoothed_nodes),
+       data_popolazione_smoothed_nodes$density, as.data.frame(GridBAUs1)[,c('x', 'y')])
+  cov.P1
+}
+
+Interp_OnBaus_Elevation <- function(data_air, GridBAUs1, raster.elevazione) {
+  grid_r <- st_transform(st_as_sf(as.data.frame(coordinates(GridBAUs1)),
+    coords = c('x', 'y'), crs = st_crs(data_air$grid)),
+               crs = st_crs(raster.elevazione))
+  # conversione covariata per metodo
+  cov.Elev = raster::extract(raster.elevazione, grid_r)
+  cov.Elev
 }
 
 ## core FRK functions
@@ -240,6 +326,19 @@ PrepareData_For_Kriging <- function(data.comp, colnames.euclid, flag_use_pca) {
   list(data.krig = data.krig, pca_output = pca_output)
 }
 
+
+GetAvg <- function(dataframe.prediction, comuni, field, data_air_dataset) {
+  library(sp)
+  library(sf)
+  library(raster)
+  spdf = SpatialPixelsDataFrame(coordinates(dataframe.prediction)[, c('x', 'y')], data = as.data.frame(dataframe.prediction[[field]]))
+  raster_obj <- raster(spdf)
+  crs(raster_obj) <- CRS(paste("EPSG:", st_crs(data_air_dataset)$epsg))
+  library(exactextractr)
+  exact_extract(raster_obj, comuni, fun="mean")
+}
+
+
 DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
   colnames.euclid, comuni,
   Global_Use_Cov_Population, Global_Use_Cov_Elevation, no_iterations,   fitted.locations = NULL, tol=0.01) {
@@ -313,7 +412,7 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
 
   prediction = SpatialPixelsDataFrame(
     as.matrix(as.data.frame(result$BAUs_prediction_df)[,c('x','y')]),
-    data = data.frame(Y1.pred.dummy=result$BAUs_prediction_df$mu),
+    data = data.frame(Y1.pred.dummy = result$BAUs_prediction_df$mu),
     proj4string = CRS(paste("EPSG:", st_crs(data.comp)$epsg)))
 
   Slist = list()
@@ -349,24 +448,13 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
     prediction[[paste0(colnames.euclid[i],".sd")]] = result$BAUs_prediction_df$sd
   }
 
-  GetAvg = function(dataframe.prediction, comuni, field) {
-    library(sp)
-    library(sf)
-    library(raster)
-    spdf = SpatialPixelsDataFrame(coordinates(dataframe.prediction)[, c('x', 'y')], data = as.data.frame(dataframe.prediction[[field]]))
-    raster_obj <- raster(spdf)
-    crs(raster_obj) <- CRS(paste("EPSG:", st_crs(data.comp)$epsg))
-    library(exactextractr)
-    exact_extract(raster_obj, comuni, fun="mean")
-  }
-
   geometries = st_transform(comuni$geometry, st_crs(GridBAUs1))
 
   comuniresultall.meaneucl = comuni
 
   for (i in (1:length(colnames_pred)))
   {
-    datafill = GetAvg(prediction, comuni, colnames_pred[i])
+    datafill = GetAvg(prediction, comuni, colnames_pred[i], data.comp)
     comuniresultall.meaneucl[colnames_pred[i]] = datafill
   }
 
@@ -398,8 +486,8 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
 
 ## Plot
 
-DoFRKPlotPrediction <- function(prediction.conc, comp.fitted.df, comp.comuni.conc,
-colnames.aitch, colnames.aitch.pred, DoPLOT) {
+CFRKPlotPrediction <- function(data.comp, domain, prediction.conc, comp.fitted.df, comp.comuni.conc,
+    colnames.aitch, colnames.aitch.pred, DoPLOT) {
   # numbers
   prediction.conc.n = prediction.conc[, paste0("c", as.character(1:length(colnames.aitch)))] %>% set_colnames(colnames.aitch.pred)
   prediction.conc.n$x = prediction.conc$x
@@ -453,10 +541,11 @@ colnames.aitch, colnames.aitch.pred, DoPLOT) {
 
   if (TRUE) # PLOT su base COMUNALE
   {
+    comuniresult = comuni
     for (i in (1:length(colnames.aitch.pred)))
     {
       datafill = as.numeric(as.data.frame(comp.comuni.conc)[,colnames.aitch.pred[i]])
-      comuniresult = comuni
+      comuniresult[colnames.aitch.pred[i]] <- datafill
       comuniresult$datafill = datafill
       if (DoPLOT) {
         x11(width = 8, height = 7)
@@ -488,15 +577,33 @@ colnames.aitch, colnames.aitch.pred, DoPLOT) {
 
         gcomuni
 
-        ggsave(paste(folder_output, paste0("prediction_cofrk_comunale_component_", as.character(i),
-                                            '_Global_Use_Cov_Population_', Global_Use_Cov_Population,
-                                            '_Global_Use_Cov_Elevation_', Global_Use_Cov_Elevation, ".png"), sep="/"))
+        ggsave(paste(folder_output, paste0("prediction_cofrk_comunale_component_", as.character(i), ".png"), sep="/"))
       }
-      st_write(comuniresult, paste0(folder_output,'/prediction_cofrk_comunale_component_', i,
-                                    '_Global_Use_Cov_Population_', Global_Use_Cov_Population,
-                                    '_Global_Use_Cov_Elevation_', Global_Use_Cov_Elevation, '.gpkg'), append = FALSE)
+      # st_write(comuniresult, paste0(folder_output,'/prediction_cofrk_comunale_component_', i,
+      #                               '_Global_Use_Cov_Population_', Global_Use_Cov_Population,
+      #                               '_Global_Use_Cov_Elevation_', Global_Use_Cov_Elevation, '.gpkg'), append = FALSE)
     }
     graphics.off()
   }
-
+  comuniresult
 }
+
+
+CFRKSave <- function(comuniresult, exporting_colnames, folder_output,
+    Global_Use_Cov_Population, Global_Use_Cov_Elevation, Flag_Export_only_PRO_COM = TRUE) {
+
+  filepath <- paste0(folder_output,'/prediction_cofrk_comunale_component_all')
+  comuni_export <- comuniresult
+
+  if (Flag_Export_only_PRO_COM) {
+    comuni_export <- as.data.frame(comuniresult)[,c("PRO_COM", exporting_colnames)]
+    cat(colnames(comuni_export),"\n\n")
+    cat("Export", paste0(filepath, '.csv'), "\n")
+    write.csv(comuni_export, paste0(filepath, '.csv'))
+  } else {
+    cat(colnames(comuni_export),"\n\n")
+    cat("Export", paste0(filepath, '.gpkg'), "\n")
+    st_write(comuniresult, paste0(filepath, '.gpkg'), append = FALSE)
+  }
+}
+
