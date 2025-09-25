@@ -1,4 +1,5 @@
-source(paste(FRK_WORKING_DIR, 'CFRK/CFRK_utils.R',  sep='/'))
+source(paste(CFRK_PACKAGE_DIR, 'CFRK_utils.R',  sep='/'))
+
 # CFRK method
 no_iterations = 20
 
@@ -25,31 +26,6 @@ PlotSymbols = function(dataset, colname, Do.Log = T, Use.Pop = T, title="", labe
   g
 }
 
-# GetDatasetBarplot = function(dataset, dataset.colnames=c("R1_perc", "R2_perc", "R3_perc", "R4_perc", "R5_perc")) {
-#   dataset.barplot = data.frame(
-#     stationid=rep(dataset$stationid, each=5),
-#     range=rep(c("R1.perc", "R2.perc", "R3.perc", "R4.perc", "R5.perc"), dim(dataset)[1]),
-#     values=c(dataset$R1_perc, dataset$R2_perc, dataset$R3_perc, dataset$R4_perc, dataset$R5_perc))
-#   dataset.barplot
-# }
-
-# BarplotStation = function(dataset, title, xfield="ttype", Do.Legend = F) {
-#   library(wesanderson)
-#   g <- ggplot(dataset, aes(fill=range, y=values, x=!!sym(xfield)), show.legend = F) +
-#     geom_bar(position="fill", stat="identity", width=0.3) +
-#     ggtitle(title) +
-#     scale_fill_manual(values = wes_palette("Zissou1", type = "continuous"))
-#   if (!Do.Legend) {
-#     g <- g + theme(legend.position = "none",
-#                    plot.title = element_text(size = 10), # Dimensione del titolo
-#                    axis.title.x = element_text(size = 8), # Dimensione del titolo dell'asse x
-#                    axis.title.y = element_text(size = 8), # Dimensione del titolo dell'asse y
-#                    axis.text.x = element_text(size = 8), # Dimensione del testo dell'asse x
-#                    axis.text.y = element_text(size = 8)) # Dimensione del testo dell'asse y)
-#   }
-#   g
-# }
-
 
 CFRK <- function(data.comp, flag_use_pca, flag_bau_comunali, flag_obs_fs, baus.cellsize, frk.args,
   layer_popolazione, raster.elevazione,
@@ -61,12 +37,10 @@ CFRK <- function(data.comp, flag_use_pca, flag_bau_comunali, flag_obs_fs, baus.c
   colnames_pred = paste0(colnames.euclid, '.pred')
   colnames.aitch.pred = paste0(colnames.aitch, '.pred')
 
-  folder_output = paste0(figures_folder, "/FRK_Pollutant_", DestName.Pollutant,
-    "_Global_Use_Cov_Population_", Global_Use_Cov_Population,  "_Global_Use_Cov_Elevation_", Global_Use_Cov_Elevation,
-    "_prediction_levels", as.character(frk.args["basis_nres"]) , "_", frk.args["basis_type"],
-    "_PCA_", as.character(flag_use_pca), "_obsFs_", as.character(flag_obs_fs), "_BausCellsize_", baus.cellsize,
-    "_IndexDrop_", as.character(DestName.IndexDrop))
-  if(!dir.exists(folder_output)){dir.create(folder_output)}
+  folder_output = GetFRKFolderOutput (figures_folder,
+   DestName.Pollutant, Global_Use_Cov_Population, Global_Use_Cov_Elevation,
+   frk.args, flag_use_pca, flag_obs_fs, baus.cellsize, 0)
+
   cat("\nDoFixedRankCokriging: Using PCA = ", flag_use_pca, "\n")
   cat("Folder output = ", folder_output, "\n")
 
@@ -162,4 +136,52 @@ CFRK <- function(data.comp, flag_use_pca, flag_bau_comunali, flag_obs_fs, baus.c
     comp.fitted.values = comp.fitted.df,
     comp.comuni.values = comp.comuni.conc,
     Slist=resultFRK$Slist)
-  }
+}
+
+
+CFRK_GetSD <- function(result, data_air_dataset, comuni, index = 1) {
+  prediction = SpatialPixelsDataFrame(
+    as.matrix(as.data.frame(result$Slist[[index]]$BAUs_prediction_df)[,c('x','y')]),
+    data = data.frame(Y.pred.sd = result$Slist[[index]]$BAUs_prediction_df$sd),
+    proj4string = CRS(paste("EPSG:", st_crs(data_air_dataset)$epsg)))
+
+  GetAvg(prediction, comuni, "Y.pred.sd", data_air_dataset)
+}
+
+
+CFRK_GetErrorInterval <- function (result, data_air_dataset, comuni, index = 1) {
+  prediction = SpatialPixelsDataFrame(
+    as.matrix(as.data.frame(result$Slist[[index]]$BAUs_prediction_df)[,c('x','y')]),
+    data = data.frame(
+      Y.pred.upper = result$Slist[[index]]$BAUs_prediction_df$mu + result$Slist[[index]]$BAUs_prediction_df$sd,
+      Y.pred.lower = result$Slist[[index]]$BAUs_prediction_df$mu - result$Slist[[index]]$BAUs_prediction_df$sd,
+      Y.pred.upper.95 = result$Slist[[index]]$BAUs_prediction_df$mu + qnorm(0.975) * result$Slist[[index]]$BAUs_prediction_df$sd,
+      Y.pred.lower.95 = result$Slist[[index]]$BAUs_prediction_df$mu - qnorm(0.975) * result$Slist[[index]]$BAUs_prediction_df$sd,
+      Y.pred.upper.99 = result$Slist[[index]]$BAUs_prediction_df$mu + qnorm(0.995) * result$Slist[[index]]$BAUs_prediction_df$sd,
+      Y.pred.lower.99 = result$Slist[[index]]$BAUs_prediction_df$mu - qnorm(0.995) * result$Slist[[index]]$BAUs_prediction_df$sd
+      ),
+    proj4string = CRS(paste("EPSG:", st_crs(data_air_dataset)$epsg)))
+
+
+  comp.comuni.conc = comuni
+  originalbasis.municipal.values <- GetAvg(prediction, comuni, "Y.pred.upper", data_air_dataset)
+  comp.comuni.conc[,"Y.pred.upper"] = ilrInv(matrix(originalbasis.municipal.values, ncol = 1))
+
+  originalbasis.municipal.values <- GetAvg(prediction, comuni, "Y.pred.lower", data_air_dataset)
+  comp.comuni.conc[,"Y.pred.lower"] = ilrInv(matrix(originalbasis.municipal.values, ncol = 1))
+
+  originalbasis.municipal.values <- GetAvg(prediction, comuni, "Y.pred.upper.95", data_air_dataset)
+  comp.comuni.conc[,"Y.pred.upper.95"] = ilrInv(matrix(originalbasis.municipal.values, ncol = 1))
+
+  originalbasis.municipal.values <- GetAvg(prediction, comuni, "Y.pred.lower.95", data_air_dataset)
+  comp.comuni.conc[,"Y.pred.lower.95"] = ilrInv(matrix(originalbasis.municipal.values, ncol = 1))
+
+  originalbasis.municipal.values <- GetAvg(prediction, comuni, "Y.pred.upper.99", data_air_dataset)
+  comp.comuni.conc[,"Y.pred.upper.99"] = ilrInv(matrix(originalbasis.municipal.values, ncol = 1))
+
+  originalbasis.municipal.values <- GetAvg(prediction, comuni, "Y.pred.lower.99", data_air_dataset)
+  comp.comuni.conc[,"Y.pred.lower.99"] = ilrInv(matrix(originalbasis.municipal.values, ncol = 1))
+
+  list(prediction.baus = prediction, prediction.comuni = comp.comuni.conc)
+}
+
