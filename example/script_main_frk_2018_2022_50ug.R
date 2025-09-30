@@ -148,7 +148,6 @@ nrow(coordinates(GridBAUs))
 # ----------------------------------------------------------------------------------
 pullutant_name = "PM10"
 result <- CFRK (data.comp = data_air$dataset, flag_use_pca, flag_bau_comunali, flag_obs_fs, baus.cellsize, frk.args,
-       layer_popolazione = layer_popolazione_cov, raster.elevazione = raster.elevazione,
        domain = data_air$domain, comuni=comuni, cov.P1 = cov.P1, GridBAUs = GridBAUs,
        DestName.IndexDrop = IndexDrop, DestName.Pollutant = pullutant_name,
        comp.levels = c(), colnames.aitch = colnames.aitch, colnames.euclid = colnames.euclid, figures_folder = DIR_FIGURES,

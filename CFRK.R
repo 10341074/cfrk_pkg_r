@@ -28,7 +28,6 @@ PlotSymbols = function(dataset, colname, Do.Log = T, Use.Pop = T, title="", labe
 
 
 CFRK <- function(data.comp, flag_use_pca, flag_bau_comunali, flag_obs_fs, baus.cellsize, frk.args,
-  layer_popolazione, raster.elevazione,
   domain, comuni, cov.P1 = NULL, GridBAUs = NULL,
   DestName.IndexDrop = 0, DestName.Pollutant = "", fitted.locations = NULL, obs.test = NULL,
   comp.levels = c(), colnames.aitch = c(), colnames.euclid = c(), figures_folder = "./figures/",
@@ -56,18 +55,6 @@ CFRK <- function(data.comp, flag_use_pca, flag_bau_comunali, flag_obs_fs, baus.c
   data.krig <- data_for_kriging[["data.krig"]]
   pca_output <- data_for_kriging[["pca_output"]]
 
-  # ------------------------------------- save plot ----------------------------
-  if (!FLAG_NO_PLOT) {
-    x11(width = 8, height = 7)
-    for (i in (1:length(colnames.euclid)))
-    {
-      PlotSymbols(as.data.frame(data.krig), colnames.euclid[i], Use.Pop = T,
-        title=paste0("Score ", as.character(i), " in Euclid"),
-        layer_popolazione = layer_popolazione) # score 1 pca
-      ggsave(paste0(folder_output, "/obs_sym_Score", as.character(i), "_in_Euclid.png"))
-    }
-    graphics.off()
-  }
 
   # ============================================================================
   cor(as.data.frame(data.krig)[colnames.euclid])
@@ -83,23 +70,28 @@ CFRK <- function(data.comp, flag_use_pca, flag_bau_comunali, flag_obs_fs, baus.c
   fitted.values = resultFRK$fitted.values
   comuni.values = resultFRK$comuni.values
 
+  if (is.null(fitted.locations)) {
+    fitted.locations <- SpatialPoints(as.data.frame(data.comp)[c("x", "y")],
+      proj4string = CRS(paste("EPSG:", st_crs(data.comp)$epsg)))
+  }
+
   # ----------------------------------------------------------------------------
   # Invert PCA
   if(flag_use_pca)
   {
     originalbasis.data <- ScoresToVars(
       as.matrix(as.data.frame(predictionbaus.values)[,colnames_pred]),
-      pca_result$pca_output, colnames=colnames.euclid) %>%
+      pca_output, colnames=colnames.euclid) %>%
       set_colnames(colnames_pred)
 
     originalbasis.fitted.values <- ScoresToVars(
       as.matrix(as.data.frame(fitted.values)[,colnames_pred]),
-      pca_result$pca_output, colnames=colnames.euclid) %>%
+      pca_output, colnames=colnames.euclid) %>%
       set_colnames(colnames_pred)
 
     originalbasis.municipal.values <- ScoresToVars(
       as.matrix(as.data.frame(comuni.values)[,colnames_pred]),
-      pca_result$pca_output, colnames=colnames.euclid) %>%
+      pca_output, colnames=colnames.euclid) %>%
       set_colnames(colnames_pred)
 
 
